@@ -38,6 +38,7 @@ warnings.filterwarnings('ignore')
 # Configs
 
 DEVICE = "cuda:0"
+# DEVICE = "cpu"
 NUM_WORKER = 1
 BATCH_SIZE = 256
 LR = 1e-3
@@ -99,7 +100,7 @@ class FakeDataset(Dataset):
         image_features = image_features.to(self.device)
         text_features = text_features.to(self.device)
 
-        return image_features, text_features, label, image_id
+        return image_features, text_features, label,image_id
 
     def get_max_image_size(self):
         max_width = 0
@@ -134,60 +135,79 @@ class MultiheadAttention(nn.Module):
 
         x = torch.relu(self.fc1(features))
         x = self.fc2(x)
-        return x , features
-
-# def get_data(data_frame,image_file):
-#     all_data = []
-#     for index,row in data_frame.iterrows():
-#         text = row['text']
-#         image_id = row['id']
-#         label = row['label']
-#         d = {}
-#
-#         if len(text) > 0 and image_id +".jpg" in os.listdir(image_file):
-#             d["id"] = image_id
-#             d["txt"] = text
-#             d["label"] = label
-#             all_data.append(d)
-#     return all_data
+        return x
 
 
-# def mini_batching(inputs,list_of_dfs,folder_path ,clip_model, clip_preprocess):
-#     mini_batch = []
-#     sim_all = []
+def get_data(data_frame):
+    all_data = []
+    for index,row in data_frame.iterrows():
+        text = row['text']
+        image_id = row['id']
+        label = row['label']
+        d = {}
 
-#     for item in inputs:
-#
-#         for df in list_of_dfs:
-#             all_data  = get_data(df,folder_path)
-#             for sample in all_data:
-#                 if item == sample['id']:
-#                     i_input = clip_preprocess(images=Image.open(folder_path+ item + ".jpg"))
-#                     i_input = torch.tensor(i_input["pixel_values"])
-#                     t_input = clip_preprocess(text=sample['txt'], return_tensors="pt")
-#                     t_input = torch.tensor(t_input["input_ids"])
-#
-#                     with torch.no_grad():
-#                         i_emb = clip_model.get_image_features(pixel_values=i_input) #512
-#                         t_emb = clip_model.get_text_features(input_ids=t_input)   #512
-#                         out_emb = t_emb + i_emb
+        if len(text)>0 and image_id +".jpg" in os.listdir(folder_path):
+            d["id"]=image_id
+            d["txt"]=text
+            d["label"]=label
+            all_data.append(d)
+    return all_data
 
-                    sim_all.append(sim(t_emb, i_emb))
-                    # mini_batch.append(out_emb)
-    sim_all = torch.stack(sim_all).squeeze()
-    # mini_batch = torch.stack(mini_batch).squeeze()
+
+def mini_batching(inputs):
+    mini_batch = []
+    sim_all = []
+    all_data = get_data(df1)
+    # print(all_data)
+    model= ChineseCLIPModel.from_pretrained("OFA-Sys/chinese-clip-vit-base-patch16")
+    preprocess = ChineseCLIPProcessor.from_pretrained("OFA-Sys/chinese-clip-vit-base-patch16")
+    sim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+    sig = torch.nn.Sigmoid()
+    for item in inputs:
+        # print(inputs)
+        for sample in all_data:
+            if item == sample['id']:
+                # print(item)
+                i_input = preprocess(images=Image.open( folder_path+ item + ".jpg"))
+                i_input = torch.tensor(i_input["pixel_values"])
+                print(i_input)
+                t_input = preprocess(text=sample['txt'], return_tensors="pt")
+                t_input = torch.tensor(t_input["input_ids"])
+                # t_input = model.tokenize(sample['txt'], truncate=True).to(device)
+                print(t_input)
+
+                # i_emb = i_input     #224
+                # t_emb = t_input     #128               #gai,xuyaobianma
+                # out_emb = i_input+t_input
+
+                with torch.no_grad():
+                    i_emb = model.get_image_features(pixel_values=i_input).to(device) #512
+                    t_emb = model.get_text_features(input_ids=t_input).to(device)     #512
+                    out_emb = t_emb + i_emb
+                    # out_emb = out_emb.to(device)
+
+                # i_emb = model.encode_image(i_input)
+                # t_emb = model.encode_text(t_input)
+                # out_emb = t_emb + i_emb
+
+
+                sim_all.append(sim(t_emb, i_emb))
+
+                # out_emb = torch.cat((t_emb, i_emb),-1)
+                mini_batch.append(out_emb)
+    sim_all = torch.stack(sim_all).to(device).squeeze()
+    mini_batch = torch.stack(mini_batch).to(device).squeeze()
     sim_mean = torch.mean(sim_all)
     sim_std = torch.std(sim_all)
     normalized_mini = sig((mini_batch - sim_mean) / sim_std)
-    # mini_batch = normalized_mini * mini_batch
+    mini_batch = normalized_mini * mini_batch
 
-    # return mini_batch
+    return mini_batch
 
-def train():
+def train( ):
     # ---  Load Config  ---
     device = torch.device("cuda:0")
-    sim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
-    sig = torch.nn.Sigmoid()
+
     num_workers = NUM_WORKER
     batch_size = BATCH_SIZE
     lr = LR
@@ -196,12 +216,49 @@ def train():
 
     # ---  Load Data  ---
 
+    folder_path1 = '/media/qust521/qust_3_big/fake_news_data/weibo/folder/nonrumor_images/'
+    folder_path2 = '/media/qust521/qust_3_big/fake_news_data/weibo/folder/rumor_images/'
     folder_path = '/media/qust521/qust_3_big/fake_news_data/weibo/folder/images/'
-    df1 = pd.read_csv('/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/train.csv')
-    df2 = pd.read_csv('/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/test.csv')
+    os.makedirs(folder_path, exist_ok=True)
+    for filename in os.listdir(folder_path1):
+        file_path1 = os.path.join(folder_path1, filename)
+        file_path = os.path.join(folder_path, filename)
+        shutil.copyfile(file_path1, file_path)
+    for filename in os.listdir(folder_path2):
+        file_path2 = os.path.join(folder_path2, filename)
+        file_path = os.path.join(folder_path, filename)
+        shutil.copyfile(file_path2, file_path)
+    file_list = os.listdir(folder_path)
+    random.shuffle(file_list)
+
+
+    df1_1 = pd.read_csv('/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/train_rumor_existing.csv',
+                        names=["label", "id", "text"], header=None)
+    df1_2 = pd.read_csv('/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/train_nonrumor_existing.csv',
+                        names=["label", "id", "text"], header=None)
+
+    df1 = pd.concat([df1_1, df1_2], ignore_index=True)
+    df1 = df1.sample(frac=1, random_state=42)
+    df1.to_csv('/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/train.csv', index=False)
+    nan_rows = df1['label'].isnull()
+    df1 = df1[~nan_rows]
+
+    unique_labels = df1['label'].unique()
+    if len(unique_labels) > 1:
+        print("bt:")
+        for label in unique_labels:
+            print(label)
+    else:
+        print("yizhi")
+    df2_1 = pd.read_csv('/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/test_rumor_existing.csv',
+                        names=["label", "id", "text"], header=None)
+    df2_2 = pd.read_csv('/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/test_nonrumor_existing.csv',
+                        names=["label", "id", "text"], header=None)
+    df2 = pd.concat([df2_1, df2_2], ignore_index=True)
+    df2 = df2.sample(frac=1, random_state=42)
+    df2.to_csv('/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/test.csv', index=False)
 
     train_set = FakeDataset(df1, folder_path)
-
 
     test_set = FakeDataset(df2, folder_path)
 
@@ -216,6 +273,8 @@ def train():
 
     multiheadAttentionModel = MultiheadAttention(embed_dim, num_heads)
     multiheadAttentionModel.to(device)
+    classfier = Classifier()
+    classfier.to(device)
     loss_func_detection = torch.nn.CrossEntropyLoss()
     optim_task_detection = torch.optim.Adam(
         list(multiheadAttentionModel.parameters()),
@@ -223,20 +282,23 @@ def train():
     )
     # ---  Model Training  ---
 
+    loss_detection_total = 0
+    best_acc = 0
     test_F1 = 0
     tolerant = 5
     saved_epoch = 0
     no_improvement_count = 0
+    best_model_state = None
     test_f1 = []
     best_test_accuracy = 0.0
+    best_model_state = None
 
 
     for epoch in range(num_epoch):
-        print(epoch)
         multiheadAttentionModel.train()
-
+        corrects_pre_detection = 0
         loss_detection_total = 0
-
+        detection_count = 0
         pre_label_detection = []
         labels = []
         c = 0
@@ -244,27 +306,25 @@ def train():
             image = batch[0]
             text = batch[1]
             label = batch[2]
-            inputs = batch[3]
-
             label = label.type(torch.LongTensor)
             label = label.to(device)
-            # train_loader.
+
             text_features = torch.squeeze(text)  # (64,1,512)-->(64,512)
             image_features = torch.squeeze(image)
             text_features = text_features.to(device)
             image_features = image_features.to(device)
 
-            df_list = [df1]
-
             # 假设 mini_batch 的输出为 mini_batch_output
-            mini_batch_output = mini_batching(inputs,df_list,folder_path, clip_model, clip_preprocess)
-            print(mini_batch_output.shape)
+            mini_batch_output = mini_batching(inputs)
 
             # 使用 MultiheadAttention 模型处理 mini_batch_output
-            features = multiheadAttentionModel(text_features,image_features)
-            print(features.shape)
+            text_attn_output, img_attn_output = multiheadAttentionModel(text_features, img_features)
+
+            features = torch.cat((img_attn_output, text_attn_output), dim=-1)
             output = mini_batch_output * features
-            pre_detection = multiheadAttentionModel(output)
+
+            pre_detection = classfier(output)
+
             loss_detection = loss_func_detection(pre_detection, label)
 
             optim_task_detection.zero_grad()
@@ -284,7 +344,9 @@ def train():
         print("train_total_loss: ", loss_detection_total)
         train_report = classification_report(labels, pre_label_detection, output_dict=True,
                                              target_names=["false", "true"])
-
+        # f1_macro = train_report['macro avg']['f1-score']
+        # print("macro F1 is: ", f1_macro)
+        # print("epoch_end report: ", train_report)
         # ---  Test  ---
         loss_detection_test, test_report = test(
             multiheadAttentionModel, test_loader)
@@ -300,10 +362,10 @@ def train():
 
         performance_metrics_1 = test_report["false"]
         df_1 = pd.DataFrame(performance_metrics_1,index=['false'])
-        df_1.to_csv("/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/data_simi/test_false.csv", index=False)
+        df_1.to_csv("/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/test_false.csv", index=False)
         performance_metrics_2 = test_report["true"]
         df_2 = pd.DataFrame(performance_metrics_2,index=['true'])
-        df_2.to_csv("/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/data_simi/test_true.csv", index=False)
+        df_2.to_csv("/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/test_true.csv", index=False)
 
         f1_macro = test_report['macro avg']['f1-score']
         print("macro F1 is: ", f1_macro)
@@ -311,17 +373,27 @@ def train():
         if f1_macro > test_F1:
             test_F1 = f1_macro
             saved_model = multiheadAttentionModel
+            # best_model_state = multiheadAttentionModel.state_dict()
             saved_epoch = epoch
             print("saving model with test_f1 {} at Epoch {}".format(test_F1, saved_epoch + 1))
+            # no_improvement_count = 0
+        # else:
+        #     no_improvement_count += 1
 
-        torch.save(saved_model, "/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/data_simi/best_model.pth")
+        # print("Epoch: {}, Test Accuracy: {:.4f}".format(epoch + 1, test_accuracy))
+        torch.save(saved_model, "/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/best_model.pth")
+        # best_model_state.save_pretrained("/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/trained_model.model")
 
+        # 如果验证集性能没有提升超过设定的等待轮数，停止训练
+        # if no_improvement_count >= tolerant:
+        #     print("Early stopping! No improvement in validation performance for {} epochs.".format(patience))
+        #     break
 
         if epoch-saved_epoch >= tolerant:
             multiheadAttentionModel.cpu()
             model = multiheadAttentionModel
             saved_model.cpu()
-
+            # saved_model =best_model_state
 
             del model, saved_model,pre_detection, loss_detection, labels, train_loader, test_loader, loss_detection_total
             gc.collect()
@@ -332,26 +404,36 @@ def train():
 
             print("Early stopping at epoch {}.".format(epoch + 1))
             break
+            # print("Early stopping! No improvement in validation performance for {} epochs.".format(tolerant))
+            # break
+
+        # 保存最佳模型状态
+
+    # if best_model_state is not None:
+    #     torch.save(best_model_state, "/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/best_model.pth")
 
         # ---  Output  ---
 
 
 def test(multiheadAttentionModel, test_loader):
     multiheadAttentionModel.eval()
+    classfier.eval()
     device = torch.device(DEVICE)
     loss_func_detection = torch.nn.CrossEntropyLoss()
+    detection_count = 0
     loss_detection_total = 0
+    detection_label_all = []
+    detection_pre_label_all = []
     pre_label_detection = []
     labels = []
     c = 0
-    # df2 = pd.read_csv('/media/qust521/qust_3_big/fake_news_data/weibo/nlpccf/weibo/test.csv')
+
 
     with torch.no_grad():
         for batch in test_loader:
             image = batch[0]
             text = batch[1]
             label = batch[2]
-            inputs = batch[3]
 
             label = label.type(torch.LongTensor)
             label = label.to(device)
@@ -362,16 +444,18 @@ def test(multiheadAttentionModel, test_loader):
             image_features = image_features.to(device)
 
             # ---  TASK2 Detection  ---
-            df_list = [df2]
 
-            mini_batch_output = mini_batching(inputs, df_list, clip_model, clip_preprocess)
-            print(mini_batch_output.shape)
+            # 假设 mini_batch 的输出为 mini_batch_output
+            mini_batch_output = mini_batching(image)
 
             # 使用 MultiheadAttention 模型处理 mini_batch_output
-            features = multiheadAttentionModel(text_features, image_features)
-            print(features.shape)
+            text_attn_output, img_attn_output = multiheadAttentionModel(text_features, img_features)
+
+            features = torch.cat((img_attn_output, text_attn_output), dim=-1)
             output = mini_batch_output * features
-            pre_detection = multiheadAttentionModel(output)
+
+            pre_detection = classfier(output)
+            # pre_detection = multiheadAttentionModel(text_features, image_features)
 
             loss_detection = loss_func_detection(pre_detection, label)
             label = label.cpu().tolist()
@@ -395,6 +479,4 @@ def test(multiheadAttentionModel, test_loader):
 
 if __name__ == "__main__":
     torch.multiprocessing.set_start_method("spawn")
-    # model = ChineseCLIPModel.from_pretrained("OFA-Sys/chinese-clip-vit-base-patch16")
-    # preprocess = ChineseCLIPProcessor.from_pretrained("OFA-Sys/chinese-clip-vit-base-patch16")
     train()
